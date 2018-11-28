@@ -11,7 +11,11 @@ from os import walk
 import argparse
 import sqlite3
 from datetime import datetime
+import unicodedata
 
+
+def normalize(string):
+    return re.sub(' +',' ',unicodedata.normalize('NFKD', string).encode("ascii","ignore").decode().replace("'","").replace("-",""))
 
 class Downloader:
 
@@ -57,16 +61,17 @@ class Downloader:
                 self.print(" {1:>4d} | {0:1s} | {3:>13s} | {2:30s} | {4:30s}".format(w, *result))
             num = int(input("number> "))
             num_str = "{:04d}".format(num)
-            for _, _, filename in walk(self.args['output_folder']):
-                if num_str in filename:
-                    filename = path.join(self.args['output_folder'], filename)
-                    subprocess.run(["vlc", "-f", filename], check=True)
-                    self.cursor.execute("UPDATE downloads SET watched_by=watched_by||? WHERE id=?", ("," + str(self.uid), num))
-                    self.db.commit()
-                    self.db.close()
-                    break
-            else:
-                self.print("No Tatort with this number.")
+            for _, _, filenames in walk(self.args['output_folder']):
+                for filename in filenames:
+                    if num_str in filename:
+                        filename = path.join(self.args['output_folder'], filename)
+                        subprocess.run(["mpv", "-fs", filename], check=True)
+                        self.cursor.execute("UPDATE downloads SET watched_by=watched_by||? WHERE id=?", ("," + str(self.uid), num))
+                        self.db.commit()
+                        self.db.close()
+                        break
+                else:
+                    self.print("No Tatort with this number.")
             #filename = subprocess.check_output("ls " + self.args['output_folder'] + " | grep " + num, shell=True, universal_newlines=True)
             #filename = path.join(self.args['output_folder'], filename[:-1])
             return
@@ -90,7 +95,7 @@ class Downloader:
         links = tree.xpath('//h4[@class="headline"]/a/@href')
 
         wikipage = requests.get("https://de.wikipedia.org/wiki/Liste_der_Tatort-Folgen")
-        wikitree = html.fromstring(wikipage.content)
+        wikitree = html.fromstring(normalize(wikipage.content.decode()))
 
         # links from daserste.de don't contain the domain
         prefix = "http://www.daserste.de"
@@ -106,7 +111,8 @@ class Downloader:
         for c, title in enumerate(titles):
             status = ""
             title = title.replace('Tatort: ', '')
-            title = title.replace('Chateau', 'Château')
+            title_origin = title
+            title = normalize(title)
             try:
                 # extract further information from wikipedia, if possible
                 number = wikitree.xpath('//td/a[text()="' + title + '"]/../../td[1]/text()')[0].replace("\n", "")
@@ -126,11 +132,13 @@ class Downloader:
                 self.unwatched.append(c)
             self.rows.append([number, title, date, kommissare])
             
-            self.print("{:2d} | {:1s} | {:>4s} | {:>13s} | {:30s} | {:30s}".format(c, status, number, date, title, kommissare))
+            self.print("{:2d} | {:1s} | {:>4s} | {:>13s} | {:30s} | {:30s}".format(c, status, number, date, title_origin, kommissare))
+            if number == " -- ":
+                continue
 
             # delete all special characters in the title
             title = title.replace(" ", "_")
-            title = letters_only.findall(title)[0]
+            # title = letters_only.findall(title)[0]
 
             # create beautiful filename
             number = "{:04d}".format(int(number))
