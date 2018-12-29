@@ -29,6 +29,7 @@ class Downloader:
         parser.add_argument("-r", "--range", default="0-", help="define range to download (a-|-z), automatically sets non-interactive flag")
         parser.add_argument("-p", "--play", action='store_true')
         parser.add_argument("-u", "--user", default="robin", help="define user for watch statistics")
+        parser.add_argument("-X", "--dummy", action='store_true', default=False)
         self.args = vars(parser.parse_args())
 
         # database foo
@@ -95,7 +96,8 @@ class Downloader:
         links = tree.xpath('//h4[@class="headline"]/a/@href')
 
         wikipage = requests.get("https://de.wikipedia.org/wiki/Liste_der_Tatort-Folgen")
-        wikitree = html.fromstring(normalize(wikipage.content.decode()))
+        wikitree_normalized = html.fromstring(normalize(wikipage.content.decode()))
+        wikitree = html.fromstring(wikipage.content.decode())
 
         # links from daserste.de don't contain the domain
         prefix = "http://www.daserste.de"
@@ -110,15 +112,14 @@ class Downloader:
 
         for c, title in enumerate(titles):
             status = ""
-            title = title.replace('Tatort: ', '')
-            title_origin = title
-            title = normalize(title)
+            title_origin = title.replace('Tatort: ', '')
+            title = normalize(title_origin)
             try:
                 # extract further information from wikipedia, if possible
-                number = wikitree.xpath('//td/a[text()="' + title + '"]/../../td[1]/text()')[0].replace("\n", "")
-                date = wikitree.xpath('//td/a[text()="' + title + '"]/../../td[4]/text()')[0].replace("\n", "")
+                number = wikitree_normalized.xpath('//td/a[text()="' + title + '"]/../../td[1]/text()')[0].replace("\n", "")
+                date = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[4]/text()')[0].replace("\n", "")
                 date = date.replace("Mai", "Mai ") # correct spacing
-                kommissare = wikitree.xpath('//td/a[text()="' + title + '"]/../../td[5]/a/text()')[0].replace("\n", "")
+                kommissare = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[5]/a/text()')[0].replace("\n", "")
                 if not self.args['disable_logging']:
                     self.cursor.execute("SELECT COUNT(*),* FROM downloads WHERE id=?", (number,))
                     if self.cursor.fetchone()[0] == 1:
@@ -168,7 +169,10 @@ class Downloader:
             if not path.isfile(self.filenames[int(i)]):
                 try:
                     self.print("")
-                    subprocess.run(["youtube-dl", "-f", self.args['format'], "-o", self.filenames[int(i)], prefix + links[int(i)]], check=True)
+                    if self.args['dummy']:
+                        subprocess.run(["touch", self.filenames[int(i)]], check=True)
+                    else:
+                        subprocess.run(["youtube-dl", "-f", self.args['format'], "-o", self.filenames[int(i)], prefix + links[int(i)]], check=True)
                     # log
                     if not self.args['disable_logging']:
                         self.cursor.execute("INSERT INTO downloads VALUES (?,?,?,?,'')",self.rows[i])
