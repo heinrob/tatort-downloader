@@ -117,6 +117,10 @@ class Downloader:
             try:
                 # extract further information from wikipedia, if possible
                 number = wikitree_normalized.xpath('//td/a[text()="' + title + '"]/../../td[1]/text()')[0].replace("\n", "")
+            except Exception:# TODO: non_interactive mode
+                number = input("Could not find Tatort ID for " + title_origin + ". Please insert> ")
+                print("\033[1A")
+            try:
                 date = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[4]/text()')[0].replace("\n", "")
                 date = date.replace("Mai", "Mai ") # correct spacing
                 kommissare = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[5]/a/text()')[0].replace("\n", "")
@@ -131,7 +135,7 @@ class Downloader:
                 kommissare = "             ----"
             if status == "":
                 self.unwatched.append(c)
-            self.rows.append([number, title, date, kommissare])
+            self.rows.append([number, title_origin, date, kommissare])
             
             self.print("{:2d} | {:1s} | {:>4s} | {:>13s} | {:30s} | {:30s}".format(c, status, number, date, title_origin, kommissare))
             if number == " -- ":
