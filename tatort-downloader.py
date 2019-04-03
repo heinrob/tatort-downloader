@@ -12,6 +12,7 @@ import argparse
 import sqlite3
 from datetime import datetime
 import unicodedata
+import shlex
 
 
 def normalize(string):
@@ -30,6 +31,7 @@ class Downloader:
         parser.add_argument("-p", "--play", action='store_true')
         parser.add_argument("-u", "--user", default="robin", help="define user for watch statistics")
         parser.add_argument("-X", "--dummy", action='store_true', default=False)
+        parser.add_argument("-P", "--player", metavar='PLAYER', default="mpv", help="video player used, default: mpv")
         self.args = vars(parser.parse_args())
 
         # database foo
@@ -66,12 +68,34 @@ class Downloader:
                 for filename in filenames:
                     if num_str in filename:
                         filename = path.join(self.args['output_folder'], filename)
-                        subprocess.run(["mpv", "-fs", filename], check=True)
-                        self.cursor.execute("UPDATE downloads SET watched_by=watched_by||? WHERE id=?", ("," + str(self.uid), num))
-                        self.db.commit()
-                        self.db.close()
+                        try:
+                            args = shlex.split(self.args['player'])
+                            args.append(filename)
+                            subprocess.run(args, check=True)
+                            # subprocess.run([self.args['player'], filename], check=True)
+                            self.cursor.execute("UPDATE downloads SET watched_by=watched_by||? WHERE id=?",
+                                                ("," + str(self.uid), num))
+                            self.db.commit()
+                            self.db.close()
+                        except subprocess.CalledProcessError as error:
+                            self.print("The video player reported an error:")
+                            self.print(error.stderr)
+                            while True:
+                                a = input("Still mark video as watched? [y/N]")
+                                a.lower()
+                                if a == 'y' or a == 'yes':
+                                    self.cursor.execute("UPDATE downloads SET watched_by=watched_by||? WHERE id=?",
+                                                    ("," + str(self.uid), num))
+                                    self.db.commit()
+                                    self.db.close()
+                                    break
+                                elif a == 'n' or a == 'no' or a == '':
+                                    break
+                                else:
+                                    self.print('Please respond with yes or no:')
                         break
                 else:
+                    self.print(filenames)
                     self.print("No Tatort with this number.")
             #filename = subprocess.check_output("ls " + self.args['output_folder'] + " | grep " + num, shell=True, universal_newlines=True)
             #filename = path.join(self.args['output_folder'], filename[:-1])
