@@ -14,6 +14,7 @@ from datetime import datetime
 import unicodedata
 import shlex
 
+months = (('Januar','Jan.'),('Februar','Feb.'),('März','Mär.'),('April','Apr.'),('Mai','Mai '),('Juni','Jun.'),('Juli','Jul.'),('August','Aug.'),('September','Sep.'),('Oktober','Okt.'),('November','Nov.'),('Dezember','Dez.'))
 
 def normalize(string):
     return re.sub(' +',' ',unicodedata.normalize('NFKD', string).encode("ascii","ignore").decode().replace("'","").replace("-",""))
@@ -30,8 +31,8 @@ class Downloader:
         parser.add_argument("-r", "--range", default="0-", help="define range to download (a-|-z), automatically sets non-interactive flag")
         parser.add_argument("-p", "--play", action='store_true')
         parser.add_argument("-u", "--user", default="robin", help="define user for watch statistics")
-        parser.add_argument("-X", "--dummy", action='store_true', default=False)
-        parser.add_argument("-P", "--player", metavar='PLAYER', default="mpv", help="video player used, default: mpv")
+        parser.add_argument("-X", "--dummy", action='store_true', default=False) # only touch files, does not download them
+        parser.add_argument("-P", "--player", metavar='PLAYER', default="mpv --fs", help="video player used, default: mpv")
         self.args = vars(parser.parse_args())
 
         # database foo
@@ -53,15 +54,22 @@ class Downloader:
                      + "  `--'   `--`--'  `--'   `---' `--'     `--'   \n"
                      + "\n")
 
-            self.print(" ID   | S | 1Ausstrahlung | Titel                          | Ermittler")
-            self.print(" ---- | - | ------------- | ------------------------------ | ------------------------------")
-            
+            rows = []
+            longest_title = 5
             self.cursor.execute("SELECT * FROM downloads ORDER BY id")
             for result in self.cursor.fetchall():
                 w = ""
                 if str(self.uid) in result[-1].split(","):
                     w = "*"
-                self.print(" {1:>4d} | {0:1s} | {3:>13s} | {2:30s} | {4:30s}".format(w, *result))
+                longest_title = max(longest_title,len(result[1]))
+                rows.append((w,*result))
+
+            self.print(" ID   | S | 1Ausstrahlung | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
+            self.print(" ---- | - | ------------- | {:-<{wid}s} | ------------------------------".format('',wid=longest_title))
+            for row in rows:
+                self.print(" {1:>4d} | {0:1s} | {3:>13s} | {2:{wid}s} | {4:30s}".format(*row,wid=longest_title))
+
+
             num = int(input("number> "))
             num_str = "{:04d}".format(num)
             for _, _, filenames in walk(self.args['output_folder']):
@@ -72,7 +80,6 @@ class Downloader:
                             args = shlex.split(self.args['player'])
                             args.append(filename)
                             subprocess.run(args, check=True)
-                            # subprocess.run([self.args['player'], filename], check=True)
                             self.cursor.execute("UPDATE downloads SET watched_by=watched_by||? WHERE id=?",
                                                 ("," + str(self.uid), num))
                             self.db.commit()
@@ -97,8 +104,6 @@ class Downloader:
                 else:
                     self.print(filenames)
                     self.print("No Tatort with this number.")
-            #filename = subprocess.check_output("ls " + self.args['output_folder'] + " | grep " + num, shell=True, universal_newlines=True)
-            #filename = path.join(self.args['output_folder'], filename[:-1])
             return
 
 
@@ -109,8 +114,6 @@ class Downloader:
                  + "  |  |  \\ '-'  |  |  |  ' '-' '|  |     |  |   \n"
                  + "  `--'   `--`--'  `--'   `---' `--'     `--'   \n"
                  + "\n")
-        self.print("#  | S | ID   | 1Ausstrahlung | Titel                          | Ermittler")
-        self.print("-- | - | ---- | ------------- | ------------------------------ | ------------------------------")
     
 
         # grab the webpages
@@ -131,7 +134,9 @@ class Downloader:
 
         self.filenames = []
         self.rows = []
-        self.unwatched = []
+        to_download = []
+        dataset = []
+        longest_title = 5
 
 
         for c, title in enumerate(titles):
@@ -140,13 +145,15 @@ class Downloader:
             title = normalize(title_origin)
             try:
                 # extract further information from wikipedia, if possible
+                #TODO: find multiple numbers if existent
                 number = wikitree_normalized.xpath('//td/a[text()="' + title + '"]/../../td[1]/text()')[0].replace("\n", "")
             except Exception:# TODO: non_interactive mode
                 number = input("Could not find Tatort ID for " + title_origin + ". Please insert> ")
                 print("\033[1A")
             try:
                 date = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[4]/text()')[0].replace("\n", "")
-                date = date.replace("Mai", "Mai ") # correct spacing
+                for mon in months:
+                    date = date.replace(mon[0],mon[1])
                 kommissare = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[5]/a/text()')[0].replace("\n", "")
                 if not self.args['disable_logging']:
                     self.cursor.execute("SELECT COUNT(*),* FROM downloads WHERE id=?", (number,))
@@ -158,27 +165,31 @@ class Downloader:
                 date = "     ---     "
                 kommissare = "             ----"
             if status == "":
-                self.unwatched.append(c)
+                to_download.append(c)
             self.rows.append([number, title_origin, date, kommissare])
-            
-            self.print("{:2d} | {:1s} | {:>4s} | {:>13s} | {:30s} | {:30s}".format(c, status, number, date, title_origin, kommissare))
+            dataset.append((c, status, number, date, title_origin, kommissare))
+            longest_title = max(longest_title,len(title_origin))
             if number == " -- ":
                 continue
 
             # delete all special characters in the title
             title = title.replace(" ", "_")
-            # title = letters_only.findall(title)[0]
 
             # create beautiful filename
             number = "{:04d}".format(int(number))
             self.filenames.append("".join((self.args['output_folder'], number, '-', title, '.', self.args['format'])))
+
+        self.print("#  | S | ID   | 1Ausstrahlung | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
+        self.print("-- | - | ---- | ------------- | {:-<{wid}s} | ------------------------------".format('',wid=longest_title))
+        for row in dataset:
+            self.print("{:2d} | {:1s} | {:>4s} | {:>13s} | {:{wid}s} | {:30s}".format(*row,wid=longest_title))
 
 
         if self.args['non_interactive'] or self.args['range'] != "0-":
             interval = self.build_interval(self.args['range'])
             ids = []
             for c, r in enumerate(self.rows):
-                if int(r[0]) in interval and c in self.unwatched:
+                if int(r[0]) in interval and c in to_download:
                     ids.append(c)
         else:
             # ask user for the desired episodes, possible formats: csv, ranges with '-'
@@ -213,22 +224,19 @@ class Downloader:
     # expand c-f to range(c,f) and single items a to [a]
     def expand_ranges(self,num):
         pieces = num.split("-")
-        length = len(pieces)
-        if length == 1:
-            try:
+        try:
+            if len(pieces) == 1:
                 return [int(pieces[0])]
-            except ValueError:
-                return [-1]
-        elif length == 2:
-            try:
-                return range(int(pieces[0]), int(pieces[1])+1)
-            except ValueError:
-                return [-1]
-        else:
-            raise IndexError("Too many dashes (-)!")
+            if pieces[0] == '':
+                return range(0,int(pieces[1])+1)
+            if pieces[1] == '':
+                return range(int(pieces[0]),20)
+            return range(int(pieces[0]),int(pieces[1])+1)
+        except ValueError:
+            return [-1]
 
 
-    # split the user input at comma and send the self.args to expand_ranges
+    # split the user input at comma and send the args to expand_ranges
     def expand_numbers(self,num):
         try:
             return {x for x in set(chain(*map(self.expand_ranges,num.split(",")))) if x != -1}
@@ -245,7 +253,7 @@ class Downloader:
             self.print("\nDownloading range [0 - {}]".format(num))
             return range(0, int(num))
         self.print("\nDownloading range [{} - INF]".format(num))
-        return range(int(num), 10000)
+        return range(int(num), 20)
 
     def print(self,message,log=False):
         if log:
