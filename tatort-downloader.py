@@ -63,15 +63,25 @@ class Downloader:
                     w = "*"
                 longest_title = max(longest_title,len(result[1]))
                 rows.append((w,*result))
+            condition = ''
+            while True:
+                self.print(" ID   | S | 1Ausstrahlung | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
+                self.print(" ---- | - | ------------- | {:-<{wid}s} | ------------------------------".format('',wid=longest_title))
+                for row in rows:
+                    if condition == '' or True in [True for r in row if condition in str(r).lower()]:
+                        self.print(" {1:>4d} | {0:1s} | {3:>13s} | {2:{wid}s} | {4:30s}".format(*row,wid=longest_title))
 
-            self.print(" ID   | S | 1Ausstrahlung | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
-            self.print(" ---- | - | ------------- | {:-<{wid}s} | ------------------------------".format('',wid=longest_title))
-            for row in rows:
-                self.print(" {1:>4d} | {0:1s} | {3:>13s} | {2:{wid}s} | {4:30s}".format(*row,wid=longest_title))
 
-
-            num = int(input("number> "))
-            num_str = "{:04d}".format(num)
+                num = input("Nummer|s> ")
+                if len(num) == 0:
+                    condition = ''
+                    continue
+                if num[0] in ('f','s'):
+                    condition = num.split(' ',1)[1].lower()
+                    print()
+                else:
+                    break
+            num_str = "{:04d}".format(int(num))
             for _, _, filenames in walk(self.args['output_folder']):
                 for filename in filenames:
                     if num_str in filename:
