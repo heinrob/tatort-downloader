@@ -14,6 +14,8 @@ from datetime import datetime
 import unicodedata
 import shlex
 
+# sqlite status format: dwm (downloaded,watched,marked)
+
 # shortening months for uniform printing
 months = (('Januar','Jan.'),('Februar','Feb.'),('März','Mär.'),('April','Apr.'),('Mai','Mai '),('Juni','Jun.'),('Juli','Jul.'),('August','Aug.'),('September','Sep.'),('Oktober','Okt.'),('November','Nov.'),('Dezember','Dez.'))
 
@@ -32,7 +34,6 @@ class Downloader:
         parser.add_argument("-L", "--disable-logging", action='store_true', help="don't log the downloaded episodes")
         parser.add_argument("-r", "--range", default="0-", help="define range to download (a-|-z), automatically sets non-interactive flag")
         parser.add_argument("-p", "--play", action='store_true')
-        parser.add_argument("-u", "--user", default="robin", help="define user for watch statistics")
         parser.add_argument("-X", "--dummy", action='store_true', default=False) # only touch files, does not download them
         parser.add_argument("-P", "--player", metavar='PLAYER', default="mpv --fs", help="video player used, default: mpv")
         self.args = vars(parser.parse_args())
@@ -42,12 +43,6 @@ class Downloader:
             self.db = sqlite3.connect("".join((self.args['output_folder'],'tatort.db')))
             self.cursor = self.db.cursor()
 
-        # set user id depending on cl-argument
-        self.uid = -1
-        if self.args['user']:
-            self.cursor.execute("SELECT id FROM users WHERE name=?", (self.args['user'],))
-            self.uid = self.cursor.fetchone()[0]
-
         self.print("                                               \n"
                  + "  ,--.            ,--.                  ,--.   \n"
                  + ",-'  '-. ,--,--.,-'  '-. ,---. ,--.--.,-'  '-. \n"
@@ -56,8 +51,6 @@ class Downloader:
                  + "  `--'   `--`--'  `--'   `---' `--'     `--'   \n"
                  + "\n")
     
-        # download the newest version of the wiki
-
         # play mode
         if self.args['play']:
             rows = []
@@ -65,19 +58,25 @@ class Downloader:
             self.cursor.execute("SELECT * FROM downloads ORDER BY id")
             for result in self.cursor.fetchall():
                 w = ""
-                if str(self.uid) in result[-1].split(","):
-                    w = "*"
+                if 'm' in result[-1]:
+                    w = "\033[31;1m!\033[0;0m"
+                elif 'w' in result[-1]:
+                    w = "\033[32m*\033[0;0m"
+                elif 'd' in result[-1]:
+                    w = "\033[2m-\033[0m"
                 longest_title = max(longest_title,len(result[1]))
-                rows.append((w,*result))
+                rows.append([w,*result])
             condition = ''
+            silent = False
             while True:
-                self.print(" ID   | S | Premiere      | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
-                self.print(" ---- | - | ------------- | {:-<{wid}s} | ------------------------------".format('',wid=longest_title))
-                for row in rows:
-                    match = sum([1 for r in row if condition in str(r).lower()]) > 0 # search every column
-                    if condition == '' or match:
-                        self.print(" {1:>4d} | {0:1s} | {3:>13s} | {2:{wid}s} | {4:30s}".format(*row,wid=longest_title))
-
+                if not silent:
+                    self.print(" ID   | S | Premiere      | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
+                    self.print(" ---- | - | ------------- | {:-<{wid}s} | ------------------------------".format('',wid=longest_title))
+                    for row in rows:
+                        match = sum([1 for r in row if condition in str(r).lower()]) > 0 # search every column
+                        if condition == '' or match:
+                            self.print(" {1:>4d} | {0:1s} | {3:>13s} | {2:{wid}s} | {4:30s}".format(*row,wid=longest_title))
+                silent = False
 
                 num = input("Nummer|?|!> ")
                 if len(num) == 0:
@@ -87,7 +86,14 @@ class Downloader:
                     condition = num.split(' ',1)[1].lower()
                     print()
                 elif num[0] == '!': # mark tatort
-                    pass
+                    n = num.split(' ')[1]
+                    # toggle mark in status
+                    status = [r for r in rows if r[1] == int(n)][0][-1]
+                    status = status.replace('m','') if 'm' in status else "{}m".format(status)
+                    self.cursor.execute("UPDATE downloads SET status=? WHERE id=?",(status,n))
+                    self.db.commit()
+                    self.print('Markierung für #{} geändert\n'.format(n))
+                    silent = True
                 else:
                     break
             # format the given number to match filenames
@@ -100,34 +106,37 @@ class Downloader:
                             args = shlex.split(self.args['player'])
                             args.append(filename)
                             subprocess.run(args, check=True)
-                            self.cursor.execute("UPDATE downloads SET watched_by=watched_by||? WHERE id=?",
-                                                ("," + str(self.uid), num))
-                            self.db.commit()
-                            self.db.close()
                         except subprocess.CalledProcessError as error:
                             self.print("The video player reported an error:")
                             self.print(error.stderr)
-                            while True:
-                                a = input("Still mark video as watched? [y/N]")
-                                a.lower()
-                                if a == 'y' or a == 'yes':
-                                    self.cursor.execute("UPDATE downloads SET watched_by=watched_by||? WHERE id=?",
-                                                    ("," + str(self.uid), num))
-                                    self.db.commit()
-                                    self.db.close()
-                                    break
-                                elif a == 'n' or a == 'no' or a == '':
-                                    break
-                                else:
-                                    self.print('Please respond with yes or no:')
+                        # do not ask for watch marking if already watched
+                        status = [r for r in rows if r[1] == int(num)][0][-1]
+                        if 'w' in status:
+                            break
+                        while True:
+                            a = input("Tatort als gesehen markieren? [J/n]")
+                            a.lower()
+                            if a == 'j' or a == 'ja' or a == '':
+                                self.cursor.execute("UPDATE downloads SET status=status||'w' WHERE id=?",(num,))
+                                self.db.commit()
+                                self.db.close()
+                                break
+                            elif a == 'n' or a == 'nein':
+                                break
+                            else:
+                                self.print('Bitte mit ja oder nein antworten:')
                         break
                 else:
                     self.print(filenames)
-                    self.print("No Tatort with this number.")
+                    self.print("Kein Tatort mit dieser Nummer heruntergeladen.")
             return
 
 
         # download mode
+
+
+        # download the newest version of the wiki
+
         # grab the webpages
         page = requests.get("http://www.daserste.de/unterhaltung/krimi/tatort/videos/index.html")
         tree = html.fromstring(page.content)
@@ -157,7 +166,7 @@ class Downloader:
                 #TODO: find multiple numbers if existent
                 number = wikitree_normalized.xpath('//td/a[text()="' + title + '"]/../../td[1]/text()')[0].replace("\n", "")
             except Exception:# TODO: non_interactive mode
-                number = input("Could not find Tatort ID for " + title_origin + ". Please insert> ")
+                number = input("Kein Tatort mit dem Titel '" + title_origin + "' gefunden. Bitte Nummer angeben> ")
                 print("\033[1A")
             
             date = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[4]/text()')[0].replace("\n", "")
@@ -250,7 +259,7 @@ class Downloader:
         pos = num.find("-")
         num = num.replace("-", "")
         if pos == -1 or num == "":
-            self.print("\nERROR: invalid range (" + num + ")",True)
+            self.print("\nERROR: ungültiges Intervall (" + num + ")",True)
             return [-1]
         if pos == 0:
             self.print("\nDownloading range [0 - {}]".format(num))
