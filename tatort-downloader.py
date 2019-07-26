@@ -14,8 +14,10 @@ from datetime import datetime
 import unicodedata
 import shlex
 
+# shortening months for uniform printing
 months = (('Januar','Jan.'),('Februar','Feb.'),('März','Mär.'),('April','Apr.'),('Mai','Mai '),('Juni','Jun.'),('Juli','Jul.'),('August','Aug.'),('September','Sep.'),('Oktober','Okt.'),('November','Nov.'),('Dezember','Dez.'))
 
+# remove all special characters for simpler searching as wiki and upload page differ in naming
 def normalize(string):
     return re.sub(' +',' ',unicodedata.normalize('NFKD', string).encode("ascii","ignore").decode().replace("'","").replace("-",""))
 
@@ -35,27 +37,31 @@ class Downloader:
         parser.add_argument("-P", "--player", metavar='PLAYER', default="mpv --fs", help="video player used, default: mpv")
         self.args = vars(parser.parse_args())
 
-        # database foo
+        # database init
         if not self.args['disable_logging']:
             self.db = sqlite3.connect("".join((self.args['output_folder'],'tatort.db')))
             self.cursor = self.db.cursor()
 
+        # set user id depending on cl-argument
         self.uid = -1
         if self.args['user']:
             self.cursor.execute("SELECT id FROM users WHERE name=?", (self.args['user'],))
             self.uid = self.cursor.fetchone()[0]
 
-        if self.args['play']:
-            self.print("                                               \n"
-                     + "  ,--.            ,--.                  ,--.   \n"
-                     + ",-'  '-. ,--,--.,-'  '-. ,---. ,--.--.,-'  '-. \n"
-                     + "'-.  .-'' ,-.  |'-.  .-'| .-. ||  .--''-.  .-' \n"
-                     + "  |  |  \\ '-'  |  |  |  ' '-' '|  |     |  |   \n"
-                     + "  `--'   `--`--'  `--'   `---' `--'     `--'   \n"
-                     + "\n")
+        self.print("                                               \n"
+                 + "  ,--.            ,--.                  ,--.   \n"
+                 + ",-'  '-. ,--,--.,-'  '-. ,---. ,--.--.,-'  '-. \n"
+                 + "'-.  .-'' ,-.  |'-.  .-'| .-. ||  .--''-.  .-' \n"
+                 + "  |  |  \\ '-'  |  |  |  ' '-' '|  |     |  |   \n"
+                 + "  `--'   `--`--'  `--'   `---' `--'     `--'   \n"
+                 + "\n")
+    
+        # download the newest version of the wiki
 
+        # play mode
+        if self.args['play']:
             rows = []
-            longest_title = 5
+            longest_title = 5 # variable width of title column
             self.cursor.execute("SELECT * FROM downloads ORDER BY id")
             for result in self.cursor.fetchall():
                 w = ""
@@ -65,26 +71,30 @@ class Downloader:
                 rows.append((w,*result))
             condition = ''
             while True:
-                self.print(" ID   | S | 1Ausstrahlung | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
+                self.print(" ID   | S | Premiere      | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
                 self.print(" ---- | - | ------------- | {:-<{wid}s} | ------------------------------".format('',wid=longest_title))
                 for row in rows:
-                    if condition == '' or True in [True for r in row if condition in str(r).lower()]:
+                    match = sum([1 for r in row if condition in str(r).lower()]) > 0 # search every column
+                    if condition == '' or match:
                         self.print(" {1:>4d} | {0:1s} | {3:>13s} | {2:{wid}s} | {4:30s}".format(*row,wid=longest_title))
 
 
-                num = input("Nummer|s> ")
+                num = input("Nummer|?|!> ")
                 if len(num) == 0:
                     condition = ''
                     continue
-                if num[0] in ('f','s'):
+                if num[0] == '?': # search for string
                     condition = num.split(' ',1)[1].lower()
                     print()
+                elif num[0] == '!': # mark tatort
+                    pass
                 else:
                     break
+            # format the given number to match filenames
             num_str = "{:04d}".format(int(num))
             for _, _, filenames in walk(self.args['output_folder']):
                 for filename in filenames:
-                    if num_str in filename:
+                    if num_str in filename: # file found
                         filename = path.join(self.args['output_folder'], filename)
                         try:
                             args = shlex.split(self.args['player'])
@@ -117,15 +127,7 @@ class Downloader:
             return
 
 
-        self.print("                                               \n"
-                 + "  ,--.            ,--.                  ,--.   \n"
-                 + ",-'  '-. ,--,--.,-'  '-. ,---. ,--.--.,-'  '-. \n"
-                 + "'-.  .-'' ,-.  |'-.  .-'| .-. ||  .--''-.  .-' \n"
-                 + "  |  |  \\ '-'  |  |  |  ' '-' '|  |     |  |   \n"
-                 + "  `--'   `--`--'  `--'   `---' `--'     `--'   \n"
-                 + "\n")
-    
-
+        # download mode
         # grab the webpages
         page = requests.get("http://www.daserste.de/unterhaltung/krimi/tatort/videos/index.html")
         tree = html.fromstring(page.content)
@@ -138,9 +140,6 @@ class Downloader:
 
         # links from daserste.de don't contain the domain
         prefix = "http://www.daserste.de"
-
-        # prepare the deletion of all special characters in the title
-        letters_only = re.compile(r"[\w\-]+")
 
         self.filenames = []
         self.rows = []
@@ -160,27 +159,21 @@ class Downloader:
             except Exception:# TODO: non_interactive mode
                 number = input("Could not find Tatort ID for " + title_origin + ". Please insert> ")
                 print("\033[1A")
-            try:
-                date = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[4]/text()')[0].replace("\n", "")
-                for mon in months:
-                    date = date.replace(mon[0],mon[1])
-                kommissare = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[5]/a/text()')[0].replace("\n", "")
-                if not self.args['disable_logging']:
-                    self.cursor.execute("SELECT COUNT(*),* FROM downloads WHERE id=?", (number,))
-                    if self.cursor.fetchone()[0] == 1:
-                        status = "D"
-            except Exception:
-                # beautiful dashes, if not possible
-                number = " -- "
-                date = "     ---     "
-                kommissare = "             ----"
+            
+            date = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[4]/text()')[0].replace("\n", "")
+            for mon in months:
+                date = date.replace(mon[0],mon[1])
+            kommissare = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[5]/a/text()')[0].replace("\n", "")
+            if not self.args['disable_logging']:
+                self.cursor.execute("SELECT COUNT(*),* FROM downloads WHERE id=?", (number,))
+                if self.cursor.fetchone()[0] == 1:
+                    status = "D"
+
             if status == "":
                 to_download.append(c)
             self.rows.append([number, title_origin, date, kommissare])
             dataset.append((c, status, number, date, title_origin, kommissare))
             longest_title = max(longest_title,len(title_origin))
-            if number == " -- ":
-                continue
 
             # delete all special characters in the title
             title = title.replace(" ", "_")
@@ -189,7 +182,7 @@ class Downloader:
             number = "{:04d}".format(int(number))
             self.filenames.append("".join((self.args['output_folder'], number, '-', title, '.', self.args['format'])))
 
-        self.print("#  | S | ID   | 1Ausstrahlung | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
+        self.print("#  | S | ID   | Premiere      | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
         self.print("-- | - | ---- | ------------- | {:-<{wid}s} | ------------------------------".format('',wid=longest_title))
         for row in dataset:
             self.print("{:2d} | {:1s} | {:>4s} | {:>13s} | {:{wid}s} | {:30s}".format(*row,wid=longest_title))
