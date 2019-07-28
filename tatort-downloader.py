@@ -51,21 +51,23 @@ class Downloader:
                  + "  `--'   `--`--'  `--'   `---' `--'     `--'   \n"
                  + "\n")
     
-        # play mode
+
+
+        ### play mode
         if self.args['play']:
             rows = []
             longest_title = 5 # variable width of title column
             self.cursor.execute("SELECT * FROM downloads ORDER BY id")
             for result in self.cursor.fetchall():
                 w = ""
-                if 'm' in result[-1]:
+                if 'm' in result[4]:
                     w = "\033[31;1m!\033[0;0m"
-                elif 'w' in result[-1]:
+                elif 'w' in result[4]:
                     w = "\033[32m*\033[0;0m"
-                elif 'd' in result[-1]:
+                elif 'd' in result[4]:
                     w = "\033[2m-\033[0m"
                 longest_title = max(longest_title,len(result[1]))
-                rows.append([w,*result])
+                rows.append({'id':result[0],'title':result[1],'date':result[2],'kommissar':result[3],'status':w})
             condition = ''
             silent = False
             while True:
@@ -73,9 +75,9 @@ class Downloader:
                     self.print(" ID   | S | Premiere      | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
                     self.print(" ---- | - | ------------- | {:-<{wid}s} | ------------------------------".format('',wid=longest_title))
                     for row in rows:
-                        match = sum([1 for r in row if condition in str(r).lower()]) > 0 # search every column
+                        match = sum([1 for r in row.values() if condition in str(r).lower()]) > 0 # search every column
                         if condition == '' or match:
-                            self.print(" {1:>4d} | {0:1s} | {3:>13s} | {2:{wid}s} | {4:30s}".format(*row,wid=longest_title))
+                            self.print(" {id:>4d} | {status:1s} | {date:>13s} | {title:{wid}s} | {kommissar:30s}".format(**row,wid=longest_title))
                 silent = False
 
                 num = input("Nummer|?|!> ")
@@ -88,7 +90,7 @@ class Downloader:
                 elif num[0] == '!': # mark tatort
                     n = num.split(' ')[1]
                     # toggle mark in status
-                    status = [r for r in rows if r[1] == int(n)][0][-1]
+                    status = [r for r in rows if r['id'] == int(n)][0][-1]
                     status = status.replace('m','') if 'm' in status else "{}m".format(status)
                     self.cursor.execute("UPDATE downloads SET status=? WHERE id=?",(status,n))
                     self.db.commit()
@@ -110,7 +112,7 @@ class Downloader:
                             self.print("The video player reported an error:")
                             self.print(error.stderr)
                         # do not ask for watch marking if already watched
-                        status = [r for r in rows if r[1] == int(num)][0][-1]
+                        status = [r for r in rows if r['id'] == int(num)][0][-1]
                         if 'w' in status:
                             break
                         while True:
@@ -132,11 +134,9 @@ class Downloader:
             return
 
 
-        # download mode
 
 
-        # download the newest version of the wiki
-
+        ### download mode
         # grab the webpages
         page = requests.get("http://www.daserste.de/unterhaltung/krimi/tatort/videos/index.html")
         tree = html.fromstring(page.content)
@@ -144,64 +144,103 @@ class Downloader:
         links = tree.xpath('//h4[@class="headline"]/a/@href')
 
         wikipage = requests.get("https://de.wikipedia.org/wiki/Liste_der_Tatort-Folgen")
-        wikitree_normalized = html.fromstring(normalize(wikipage.content.decode()))
         wikitree = html.fromstring(wikipage.content.decode())
 
         # links from daserste.de don't contain the domain
         prefix = "http://www.daserste.de"
 
-        self.filenames = []
-        self.rows = []
         to_download = []
         dataset = []
         longest_title = 5
 
 
+
+        ### update the database
+        # get all ids currently in database
+        self.cursor.execute("SELECT id FROM downloads")
+        ids = [x[0] for x in self.cursor.fetchall()]
+        # download the newest version of the wiki
+        for tablerow in wikitree.xpath('//*[@id="mw-content-text"]/div/table[1]/tbody/tr'):
+            episode = [tablerow.getchildren()[i].text_content()[:-1] for i in [0,1,3,4]]
+            try:
+                episode[0] = int(episode[0])
+            except ValueError: # first row is the headline with text
+                continue
+            # remove newlines, insert missing spaces before '(' and after '/'
+            episode[3] = episode[3].replace('\n','')
+            episode[3] = re.sub(r'(?<=\S)\(',r' (',episode[3])
+            episode[3] = re.sub(r'/(?=\S)',r'/ ',episode[3])
+            
+            for mon in months: # reformat the dates
+                episode[2] = episode[2].replace(mon[0],mon[1])
+            if '[' in episode[2]: # remove wikipedias annotations
+                episode[2] = episode[2].split('[')[0]
+            episode[2] = re.sub(r'(\w*) \(.*',r'\1',episode[2])
+            
+            episode.append(normalize(episode[1])) # append the searchable title
+            # remove hint for double names from main title
+            if '(Folge' in episode[1]:
+                episode[1] = episode[1].split('(')[0]
+            if episode[0] in ids:
+                #self.cursor.execute("UPDATE downloads SET title=?,normalized=? WHERE id=?",(episode[1],episode[4],episode[0]))
+                continue
+            else:
+                self.cursor.execute("INSERT INTO downloads VALUES (?,?,?,?,'',?)",episode)
+            self.db.commit()
+        
+
+        ### download the newest episodes
         for c, title in enumerate(titles):
             status = ""
             title_origin = title.replace('Tatort: ', '')
+            # find episode in database based on the name
             title = normalize(title_origin)
-            try:
-                # extract further information from wikipedia, if possible
-                #TODO: find multiple numbers if existent
-                number = wikitree_normalized.xpath('//td/a[text()="' + title + '"]/../../td[1]/text()')[0].replace("\n", "")
-            except Exception:# TODO: non_interactive mode
-                number = input("Kein Tatort mit dem Titel '" + title_origin + "' gefunden. Bitte Nummer angeben> ")
-                print("\033[1A")
-            
-            date = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[4]/text()')[0].replace("\n", "")
-            for mon in months:
-                date = date.replace(mon[0],mon[1])
-            kommissare = wikitree.xpath('//tr[td[normalize-space()="' + number + '"]]/td[5]/a/text()')[0].replace("\n", "")
-            if not self.args['disable_logging']:
-                self.cursor.execute("SELECT COUNT(*),* FROM downloads WHERE id=?", (number,))
-                if self.cursor.fetchone()[0] == 1:
-                    status = "D"
-
-            if status == "":
+            self.cursor.execute("SELECT * FROM downloads WHERE normalized LIKE ?",('%'+title+'%',))
+            row = self.cursor.fetchall()
+            if len(row) != 1:
+                # TODO: non_interactive mode
+                for i,r in enumerate(row):
+                    # duplicate names
+                    if '(Folge' in r[5]:
+                        continue
+                    # exact match
+                    if r[5] == title:
+                        row = row[i]
+                        break
+                else: # if duplicate names, ask user for ID using the teasertext as hint
+                    episodepage = requests.get(prefix + links[c])
+                    episodetree = html.fromstring(episodepage.content)
+                    teasertext = episodetree.xpath('//p[@class="teasertext"][2]/text()')[0].replace('\n','')
+                    print(teasertext)
+                    number = input("Titel '" + title_origin + "' nicht eindeutig. Bitte Nummer angeben> ")
+                    self.cursor.execute("SELECT * FROM downloads WHERE id=?",(int(number),))
+                    row = self.cursor.fetchall()[0]
+                    self.print("\033[1A") #TODO remove more/less lines
+            else:
+                row = row[0] 
+            status = '-' if 'd' in row[4] else ''
+            if 'd' not in row[4]:
                 to_download.append(c)
-            self.rows.append([number, title_origin, date, kommissare])
-            dataset.append((c, status, number, date, title_origin, kommissare))
             longest_title = max(longest_title,len(title_origin))
 
-            # delete all special characters in the title
+            # make title filename friendly
             title = title.replace(" ", "_")
-
             # create beautiful filename
-            number = "{:04d}".format(int(number))
-            self.filenames.append("".join((self.args['output_folder'], number, '-', title, '.', self.args['format'])))
+            number = "{:04d}".format(row[0])
+            filename = "".join((self.args['output_folder'], number, '-', title, '.', self.args['format']))
+            dataset.append({'count':c, 'status':status, 'id':row[0], 'date':row[2], 'title':title_origin, 'kommissar':row[3], 'file':filename})
 
         self.print("#  | S | ID   | Premiere      | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
         self.print("-- | - | ---- | ------------- | {:-<{wid}s} | ------------------------------".format('',wid=longest_title))
         for row in dataset:
-            self.print("{:2d} | {:1s} | {:>4s} | {:>13s} | {:{wid}s} | {:30s}".format(*row,wid=longest_title))
+            self.print("{count:2d} | {status:1s} | {id:>4d} | {date:>13s} | {title:{wid}s} | {kommissar:30s}".format(**row,wid=longest_title))
 
 
         if self.args['non_interactive'] or self.args['range'] != "0-":
             interval = self.build_interval(self.args['range'])
             ids = []
-            for c, r in enumerate(self.rows):
-                if int(r[0]) in interval and c in to_download:
+            for c, r in enumerate(dataset):
+                if int(r['id']) in interval and c in to_download:
                     ids.append(c)
         else:
             # ask user for the desired episodes, possible formats: csv, ranges with '-'
@@ -216,22 +255,20 @@ class Downloader:
         # strip the user input to the possible IDs
         ids = [x for x in range(len(titles)) if x in ids]
         for i in ids:
+            i = int(i)
             # only download if not existent
-            if not path.isfile(self.filenames[int(i)]):
+            if not path.isfile(dataset[i]['file']):
                 try:
                     self.print("")
                     if self.args['dummy']:
-                        subprocess.run(["touch", self.filenames[int(i)]], check=True)
+                        subprocess.run(["touch", dataset[i]['file']], check=True)
                     else:
-                        subprocess.run(["youtube-dl", "-f", self.args['format'], "-o", self.filenames[int(i)], prefix + links[int(i)]], check=True)
-                    # log
-                    if not self.args['disable_logging']:
-                        self.cursor.execute("INSERT INTO downloads VALUES (?,?,?,?,'')",self.rows[i])
-                        self.db.commit()
+                        subprocess.run(["youtube-dl", "-f", self.args['format'], "-o", dataset[i]['file'], prefix + links[i]], check=True)
+                    self.cursor.execute("UPDATE downloads SET status='d'||status WHERE id=?",(dataset[i]['id'],))
+                    self.db.commit()
                 except subprocess.CalledProcessError as cpe:
                     self.print("youtube-dl exited with" + cpe.returncode + "\noutput:" + cpe.output,True)
-        if not self.args['disable_logging']:
-            self.db.close()
+        self.db.close()
 
     # expand c-f to range(c,f) and single items a to [a]
     def expand_ranges(self,num):
