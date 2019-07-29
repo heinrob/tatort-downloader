@@ -15,6 +15,7 @@ import unicodedata
 import shlex
 
 # sqlite status format: dwm (downloaded,watched,marked)
+STATUS = {'d': '\033[2m-\033[0m', 'w': '\033[32m*\033[0;0m', 'm': '\033[31;1m!\033[0;0m', ' ': ''}
 
 # shortening months for uniform printing
 months = (('Januar','Jan.'),('Februar','Feb.'),('März','Mär.'),('April','Apr.'),('Mai','Mai '),('Juni','Jun.'),('Juli','Jul.'),('August','Aug.'),('September','Sep.'),('Oktober','Okt.'),('November','Nov.'),('Dezember','Dez.'))
@@ -22,6 +23,15 @@ months = (('Januar','Jan.'),('Februar','Feb.'),('März','Mär.'),('April','Apr.'
 # remove all special characters for simpler searching as wiki and upload page differ in naming
 def normalize(string):
     return re.sub(' +',' ',unicodedata.normalize('NFKD', string).encode("ascii","ignore").decode().replace("'","").replace("-",""))
+
+def input_loop(question,answers=(('j','ja',''),('n','nein')),err='Bitte mit ja oder nein antworten'):
+    while True:
+        a = input(question).lower()
+        if a in answers[0]:
+            return True
+        if a in answers[1]:
+            return False
+        print(err)
 
 class Downloader:
 
@@ -59,15 +69,8 @@ class Downloader:
             longest_title = 5 # variable width of title column
             self.cursor.execute("SELECT * FROM downloads ORDER BY id")
             for result in self.cursor.fetchall():
-                w = ""
-                if 'm' in result[4]:
-                    w = "\033[31;1m!\033[0;0m"
-                elif 'w' in result[4]:
-                    w = "\033[32m*\033[0;0m"
-                elif 'd' in result[4]:
-                    w = "\033[2m-\033[0m"
                 longest_title = max(longest_title,len(result[1]))
-                rows.append({'id':result[0],'title':result[1],'date':result[2],'kommissar':result[3],'status':w})
+                rows.append({'id':result[0],'title':result[1],'date':result[2],'kommissar':result[3],'status':result[4]})
             condition = ''
             silent = False
             while True:
@@ -75,27 +78,40 @@ class Downloader:
                     self.print(" ID   | S | Premiere      | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
                     self.print(" ---- | - | ------------- | {:-<{wid}s} | ------------------------------".format('',wid=longest_title))
                     for row in rows:
-                        match = sum([1 for r in row.values() if condition in str(r).lower()]) > 0 # search every column
-                        if condition == '' or match:
-                            self.print(" {id:>4d} | {status:1s} | {date:>13s} | {title:{wid}s} | {kommissar:30s}".format(**row,wid=longest_title))
+                        pretty_status = STATUS[" {}".format(row['status'])[-1]]
+                        match = sum([1 for r in row.values() if condition in str(r).lower()]) # search every column
+                        match += 1 if condition in pretty_status else 0
+                        if condition == '' or match > 0:
+                            self.print(" {id:>4d} | {ps:1s} | {date:>13s} | {title:{wid}s} | {kommissar:30s}".format(**row,ps=pretty_status,wid=longest_title))
                 silent = False
 
                 num = input("Nummer|?|!> ")
                 if len(num) == 0:
                     condition = ''
                     continue
-                if num[0] == '?': # search for string
+                if num[0] == 'h':
+                    self.print('h\t- zeige diese Hilfe an')
+                    self.print('s|? $\t- suche nach $')
+                    self.print('m|! #\t- markiere #')
+                    self.print('w #\t- markiere # als gesehen')
+                    self.print('q\t- beende das Programm')
+                    silent = True
+                elif num[0] in ('s','?'): # search for string
                     condition = num.split(' ',1)[1].lower()
                     print()
-                elif num[0] == '!': # mark tatort
+                elif num[0] in ('m','!'): # mark tatort
                     n = num.split(' ')[1]
                     # toggle mark in status
-                    status = [r for r in rows if r['id'] == int(n)][0][-1]
+                    idx = [i for i,r in enumerate(rows) if r['id'] == int(n)][0]
+                    status = rows[idx]['status']
                     status = status.replace('m','') if 'm' in status else "{}m".format(status)
                     self.cursor.execute("UPDATE downloads SET status=? WHERE id=?",(status,n))
                     self.db.commit()
                     self.print('Markierung für #{} geändert\n'.format(n))
+                    rows[idx]['status'] = status
                     silent = True
+                elif num[0] == 'q':
+                    exit(0)
                 else:
                     break
             # format the given number to match filenames
@@ -112,21 +128,17 @@ class Downloader:
                             self.print("The video player reported an error:")
                             self.print(error.stderr)
                         # do not ask for watch marking if already watched
-                        status = [r for r in rows if r['id'] == int(num)][0][-1]
+                        status = [r for r in rows if r['id'] == int(num)][0]['status']
                         if 'w' in status:
                             break
-                        while True:
-                            a = input("Tatort als gesehen markieren? [J/n]")
-                            a.lower()
-                            if a == 'j' or a == 'ja' or a == '':
-                                self.cursor.execute("UPDATE downloads SET status=status||'w' WHERE id=?",(num,))
-                                self.db.commit()
-                                self.db.close()
-                                break
-                            elif a == 'n' or a == 'nein':
-                                break
+                        if input_loop("Tatort als gesehen markieren? [J/n]"):
+                            if 'm' in status and input_loop('Markierung entfernen? [J/n]'):
+                                s = 'dw'
                             else:
-                                self.print('Bitte mit ja oder nein antworten:')
+                                s = 'dwm'
+                            self.cursor.execute("UPDATE downloads SET status=? WHERE id=?",(s,num))
+                            self.db.commit()
+                            self.db.close()
                         break
                 else:
                     self.print(filenames)
