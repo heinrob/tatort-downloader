@@ -24,6 +24,7 @@ months = (('Januar','Jan.'),('Februar','Feb.'),('März','Mär.'),('April','Apr.'
 def normalize(string):
     return re.sub(' +',' ',unicodedata.normalize('NFKD', string).encode("ascii","ignore").decode().replace("'","").replace("-",""))
 
+# ask user for confirmation in a loop
 def input_loop(question,answers=(('j','ja',''),('n','nein')),err='Bitte mit ja oder nein antworten'):
     while True:
         a = input(question).lower()
@@ -32,6 +33,34 @@ def input_loop(question,answers=(('j','ja',''),('n','nein')),err='Bitte mit ja o
         if a in answers[1]:
             return False
         print(err)
+
+class Status:
+    STATUS = {'downloaded': 0b1, 'watched': 0b10, 'marked': 0b100}
+    def __init__(self,s):
+        try:
+            self.status = int(s)
+        except ValueError:
+            self.status = 0
+    def __str__(self):
+        return str(self.status)
+    def __repr__(self):
+        return 'X'
+    def __format__(self,fmt):
+        if isinstance(fmt,str):
+            if self.status & self.STATUS['marked']:
+                return '\033[31;1m!\033[0;0m'
+            if self.status & self.STATUS['watched']:
+                return '\033[32m*\033[0;0m'
+            if self.status & self.STATUS['downloaded']:
+                return '\033[2m-\033[0m'
+            return ' '
+        else:
+            raise ValueError
+    def has(self,s):
+        return self.status & self.STATUS[s]
+    def toggle(self,s):
+        self.status = self.status ^ self.STATUS[s]
+        
 
 class Downloader:
 
@@ -70,7 +99,7 @@ class Downloader:
             self.cursor.execute("SELECT * FROM downloads ORDER BY id")
             for result in self.cursor.fetchall():
                 longest_title = max(longest_title,len(result[1]))
-                rows.append({'id':result[0],'title':result[1],'date':result[2],'kommissar':result[3],'status':result[4]})
+                rows.append({'id':result[0],'title':result[1],'date':result[2],'kommissar':result[3],'status':Status(result[4])})
             condition = ''
             silent = False
             while True:
@@ -78,11 +107,11 @@ class Downloader:
                     self.print(" ID   | S | Premiere      | {:{wid}s} | Ermittler".format('Titel',wid=longest_title))
                     self.print(" ---- | - | ------------- | {:-<{wid}s} | ------------------------------".format('',wid=longest_title))
                     for row in rows:
-                        pretty_status = STATUS[" {}".format(row['status'])[-1]]
+                        #pretty_status = str(row['status'])
                         match = sum([1 for r in row.values() if condition in str(r).lower()]) # search every column
-                        match += 1 if condition in pretty_status else 0
+                        #match += 1 if condition in pretty_status else 0
                         if condition == '' or match > 0:
-                            self.print(" {id:>4d} | {ps:1s} | {date:>13s} | {title:{wid}s} | {kommissar:30s}".format(**row,ps=pretty_status,wid=longest_title))
+                            self.print(" {id:>4d} | {status:1s} | {date:>13s} | {title:{wid}s} | {kommissar:30s}".format(**row,wid=longest_title))
                 silent = False
 
                 num = input("Nummer|?|!> ")
@@ -101,15 +130,26 @@ class Downloader:
                     print()
                 elif num[0] in ('m','!'): # mark tatort
                     n = num.split(' ')[1]
+                    idx = int(n) - 1
                     # toggle mark in status
-                    idx = [i for i,r in enumerate(rows) if r['id'] == int(n)][0]
-                    status = rows[idx]['status']
-                    status = status.replace('m','') if 'm' in status else "{}m".format(status)
-                    self.cursor.execute("UPDATE downloads SET status=? WHERE id=?",(status,n))
+                    rows[idx]['status'].toggle('marked')
+                    self.cursor.execute("UPDATE downloads SET status=? WHERE id=?",(str(rows[idx]['status']),n))
                     self.db.commit()
                     self.print('Markierung für #{} geändert\n'.format(n))
-                    rows[idx]['status'] = status
                     silent = True
+                elif num[0] == 'w':
+                    silent = True
+                    n = num.split(' ')[1]
+                    idx = int(n) - 1
+                    if not rows[idx]['status'].has('downloaded'):
+                        if not rows[idx]['status'].has('watched'):
+                            if not input_loop('#{} ist nicht heruntergeladen. Trotzdem gesehen? [j/N]'.format(n),answers=(('j','ja'),('n','nein',''))):
+                                continue
+                    rows[idx]['status'].toggle('watched')
+                    self.cursor.execute("UPDATE downloads SET status=? WHERE id=?",(str(rows[idx]['status']),n))
+                    self.db.commit()
+                    self.print('Status für #{} geändert\n'.format(n))
+                    
                 elif num[0] == 'q':
                     exit(0)
                 else:
@@ -128,15 +168,15 @@ class Downloader:
                             self.print("The video player reported an error:")
                             self.print(error.stderr)
                         # do not ask for watch marking if already watched
-                        status = [r for r in rows if r['id'] == int(num)][0]['status']
-                        if 'w' in status:
+                        #status = [r for r in rows if r['id'] == int(num)][0]['status']
+                        idx = int(num) - 1
+                        if rows[idx]['status'].has('watched'):
                             break
                         if input_loop("Tatort als gesehen markieren? [J/n]"):
-                            if 'm' in status and input_loop('Markierung entfernen? [J/n]'):
-                                s = 'dw'
-                            else:
-                                s = 'dwm'
-                            self.cursor.execute("UPDATE downloads SET status=? WHERE id=?",(s,num))
+                            rows[idx]['status'].toggle('watched')
+                            if rows[idx]['status'].has('marked') and input_loop('Markierung entfernen? [J/n]'):
+                                rows[idx]['status'].toggle('marked')
+                            self.cursor.execute("UPDATE downloads SET status=? WHERE id=?",(str(rows[idx]['status']),num))
                             self.db.commit()
                             self.db.close()
                         break
@@ -198,12 +238,11 @@ class Downloader:
                 continue
             else:
                 self.cursor.execute("INSERT INTO downloads VALUES (?,?,?,?,'',?)",episode)
-            self.db.commit()
+                self.db.commit()
         
 
         ### download the newest episodes
         for c, title in enumerate(titles):
-            status = ""
             title_origin = title.replace('Tatort: ', '')
             # find episode in database based on the name
             title = normalize(title_origin)
@@ -230,8 +269,8 @@ class Downloader:
                     self.print("\033[1A") #TODO remove more/less lines
             else:
                 row = row[0] 
-            status = '-' if 'd' in row[4] else ''
-            if 'd' not in row[4]:
+            status = '-' if Status(row[4]).has('downloaded') else ''
+            if status == '':
                 to_download.append(c)
             longest_title = max(longest_title,len(title_origin))
 
@@ -276,7 +315,7 @@ class Downloader:
                         subprocess.run(["touch", dataset[i]['file']], check=True)
                     else:
                         subprocess.run(["youtube-dl", "-f", self.args['format'], "-o", dataset[i]['file'], prefix + links[i]], check=True)
-                    self.cursor.execute("UPDATE downloads SET status='d'||status WHERE id=?",(dataset[i]['id'],))
+                    self.cursor.execute("UPDATE downloads SET status=status+? WHERE id=?",(Status.STATUS['downloaded'],dataset[i]['id'],))
                     self.db.commit()
                 except subprocess.CalledProcessError as cpe:
                     self.print("youtube-dl exited with" + cpe.returncode + "\noutput:" + cpe.output,True)
